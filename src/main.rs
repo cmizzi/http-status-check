@@ -188,7 +188,7 @@ fn init_logger(opts: &Opts) {
             0 => "error",
             1 => "info",
             2 => "debug",
-            3 | _ => "trace",
+            _ => "trace",
         }
     );
 
