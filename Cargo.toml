@@ -5,8 +5,8 @@ authors = ["Cyril Mizzi <cyril.mizzi@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-reqwest = { version = "0.10", features = ["json"] }
-tokio = { version = "0.2", features = ["full"] }
+reqwest = { version = "0.10", features = [] }
+tokio = { version = "0.2", features = ["rt-core", "macros"] }
 url = "2.1.1"
 log = "0.4.11"
 select = "0.5.0"
