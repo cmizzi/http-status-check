@@ -4,11 +4,13 @@ extern crate log;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::io::Write;
+use std::sync::Arc;
 
 use clap::Clap;
+use env_logger::Env;
+use futures::lock::Mutex;
 use select::document::Document;
 use url::{ParseError, Url};
-use env_logger::Env;
 
 #[derive(Clap, Debug)]
 #[clap(version = "1.0", author = "Cyril Mizzi <me@p1ngouin.com>")]
@@ -71,16 +73,16 @@ impl Response {
 ///
 /// This struct is the base of our crawler. It handles the base URL and other options.
 #[derive(Debug)]
-struct Crawler<'a> {
+struct Crawler {
     base: Url,
-    opts: &'a Opts,
+    opts: Opts,
     pending: VecDeque<String>,
     responses: HashMap<String, Response>,
 }
 
-impl<'a> Crawler<'a> {
+impl Crawler {
     /// Create a new crawler instance.
-    fn new(opts: &'a Opts) -> Self {
+    fn new(opts: Opts) -> Self {
         let url = Url::parse(&opts.entrypoint).expect("Cannot parse the given initial URL.");
         let mut crawler = Self {
             base: url.clone(),
@@ -209,15 +211,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let opts: Opts = Opts::parse();
 
     init_logger(&opts);
-    let mut crawler = Crawler::new(&opts);
 
-    loop {
-        if let Some(url) = crawler.pending.pop_front() {
-            crawler.execute(url.as_str()).await?;
-        } else {
-            break;
-        }
+    let crawler = Arc::new(Mutex::new(Crawler::new(opts)));
+    let mut threads = vec![];
+
+    for _ in 0..5 {
+        let crawler = Arc::clone(&crawler);
+
+        threads.push(
+            tokio::spawn(async move {
+                loop {
+                    let mut crawler = crawler.lock().await;
+
+                    if let Some(url) = crawler.pending.pop_front() {
+                        if let Err(e) = crawler.execute(&url).await {
+                            eprintln!("{}", e);
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            })
+        );
     }
 
+    futures::future::join_all(threads).await;
     Ok(())
 }
