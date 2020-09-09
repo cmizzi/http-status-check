@@ -1,8 +1,33 @@
+#[macro_use]
+extern crate log;
+
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
+use std::io::Write;
 
+use clap::Clap;
 use select::document::Document;
 use url::{ParseError, Url};
+use env_logger::Env;
+
+#[derive(Clap, Debug)]
+#[clap(version = "1.0", author = "Cyril Mizzi <me@p1ngouin.com>")]
+struct Opts {
+    /// The domain to start working on.
+    entrypoint: String,
+
+    /// Crawler will only execute URLs from the same domain as <entrypoint>.
+    #[clap(short, long)]
+    restrict_on_domain: bool,
+
+    /// Limit the number of URL to crawl.
+    #[clap(short, long, default_value = "0")]
+    limit: u32,
+
+    /// Verbosity. By default, will only log ERROR level.
+    #[clap(short, long, parse(from_occurrences))]
+    verbose: i32,
+}
 
 /// A response can be an already-parsed URL or even a in-progress URL.
 ///
@@ -47,35 +72,31 @@ impl Response {
 /// This struct is the base of our crawler. It handles the base URL and other options.
 #[derive(Debug)]
 struct Crawler<'a> {
-    base: &'a Url,
-    domain_only: bool,
-    limit: u32,
+    base: Url,
+    opts: &'a Opts,
     pending: VecDeque<String>,
     responses: HashMap<String, Response>,
 }
 
 impl<'a> Crawler<'a> {
     /// Create a new crawler instance.
-    fn new(base: &'a Url, domain_only: bool) -> Self {
-        Self {
-            base,
-            domain_only,
-            limit: 0,
+    fn new(opts: &'a Opts) -> Self {
+        let url = Url::parse(&opts.entrypoint).expect("Cannot parse the given initial URL.");
+        let mut crawler = Self {
+            base: url.clone(),
+            opts,
             pending: VecDeque::new(),
             responses: HashMap::new(),
-        }
-    }
+        };
 
-    /// Limit the number of links to crawl.
-    fn set_limit(&mut self, limit: u32) -> &Self {
-        self.limit = limit;
-        self
+        crawler.queue(url.path());
+        crawler
     }
 
     /// Handle a response (after the request get executed).
     async fn on_response(&mut self, response: reqwest::Response) -> Result<(), Box<dyn Error>> {
-        let url = response.url().to_string();
-        let status = response.status().as_u16();
+        let url = response.url().clone();
+        let status = response.status().clone();
         let body = response.text().await?;
 
         Document::from(body.as_str())
@@ -83,12 +104,16 @@ impl<'a> Crawler<'a> {
             .filter_map(|n| n.attr("href"))
             .for_each(|x| self.queue(x));
 
-        println!("{} - {}", status, url);
+        if status.is_success() {
+            info!("{} - {}", status, url);
+        } else {
+            error!("{} - {}", status, url);
+        }
 
         self.responses
-            .entry(url)
-            .or_insert(Response::new(status, 1))
-            .set_status(status);
+            .entry(url.to_string())
+            .or_insert(Response::new(status.as_u16(), 1))
+            .set_status(status.as_u16());
 
         Ok(())
     }
@@ -127,7 +152,7 @@ impl<'a> Crawler<'a> {
 
     /// Check if an URL should be excluded (already in progress or not on the domain).
     fn is_excluded(&mut self, url: &str) -> bool {
-        if self.limit > 0 && self.responses.len() >= self.limit as usize {
+        if self.opts.limit > 0 && self.responses.len() >= self.opts.limit as usize {
             return true;
         }
 
@@ -139,7 +164,7 @@ impl<'a> Crawler<'a> {
         match Url::parse(url) {
             // If we successfully parse the URL, we can easily check if the domain is different than
             // requested.
-            Ok(entry) => self.domain_only && entry.domain() != self.base.domain(),
+            Ok(entry) => self.opts.restrict_on_domain && entry.domain() != self.base.domain(),
 
             // Otherwise, we only have to handle relative URL. If error is about relative, we can
             // safely not exclude the URL because we're working using absolute format.
@@ -160,13 +185,31 @@ impl<'a> Crawler<'a> {
     }
 }
 
+/// Initialize the logger.
+fn init_logger(opts: &Opts) {
+    let env = Env::default().default_filter_or(
+        match opts.verbose {
+            0 => "error",
+            1 => "info",
+            2 => "debug",
+            3 | _ => "trace",
+        }
+    );
+
+    env_logger::from_env(env)
+        .format(|buf, record| {
+            let level_style = buf.default_level_style(record.level());
+            writeln!(buf, "[{} {:>5}]: {}", buf.timestamp(), level_style.value(record.level()), record.args())
+        })
+        .init();
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let url = Url::parse("https://lesiteimmo.test").expect("Cannot parse the given initial URL.");
-    let mut crawler = Crawler::new(&url, true);
+    let opts: Opts = Opts::parse();
 
-    crawler.set_limit(100);
-    crawler.queue(url.path());
+    init_logger(&opts);
+    let mut crawler = Crawler::new(&opts);
 
     loop {
         if let Some(url) = crawler.pending.pop_front() {
@@ -176,6 +219,5 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    println!("{:#?}", crawler);
     Ok(())
 }
