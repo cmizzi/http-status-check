@@ -47,10 +47,7 @@ struct Response {
 impl Response {
     /// Create a new Response instance.
     fn new(status: u16, count: u32) -> Self {
-        Self {
-            status,
-            count,
-        }
+        Self { status, count }
     }
 
     /// Increment the count by 1.
@@ -60,7 +57,7 @@ impl Response {
 
     /// Increment the count by `n`.
     fn increment_by(&mut self, value: u32) {
-        self.count = self.count + value;
+        self.count += value;
     }
 
     /// Update the status.
@@ -98,7 +95,7 @@ impl Crawler {
     /// Handle a response (after the request get executed).
     async fn on_response(&mut self, response: reqwest::Response) -> Result<(), Box<dyn Error>> {
         let url = response.url().clone();
-        let status = response.status().clone();
+        let status = response.status();
         let body = response.text().await?;
 
         Document::from(body.as_str())
@@ -114,7 +111,7 @@ impl Crawler {
 
         self.responses
             .entry(url.to_string())
-            .or_insert(Response::new(status.as_u16(), 1))
+            .or_insert_with(|| Response::new(status.as_u16(), 1))
             .set_status(status.as_u16());
 
         Ok(())
@@ -141,7 +138,7 @@ impl Crawler {
     fn format_url(&self, url: &str) -> String {
         let mut formatted: String = url.to_string();
 
-        if url.starts_with("/") {
+        if url.starts_with('/') {
             if let Ok(full_url) = self.base.join(url) {
                 formatted = full_url.to_string();
             } else {
@@ -173,16 +170,13 @@ impl Crawler {
             Err(e) => match e {
                 ParseError::RelativeUrlWithoutBase => false,
                 _ => true,
-            }
+            },
         }
     }
 
     /// Execute a request using the given URL.
     async fn execute(&mut self, url: &str) -> Result<(), Box<dyn Error>> {
-        self
-            .on_response(
-                reqwest::get(&self.format_url(url)).await?
-            )
+        self.on_response(reqwest::get(&self.format_url(url)).await?)
             .await
     }
 }
@@ -218,21 +212,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     for _ in 0..5 {
         let crawler = Arc::clone(&crawler);
 
-        threads.push(
-            tokio::spawn(async move {
-                loop {
-                    let mut crawler = crawler.lock().await;
+        threads.push(tokio::spawn(async move {
+            loop {
+                let mut crawler = crawler.lock().await;
 
-                    if let Some(url) = crawler.pending.pop_front() {
-                        if let Err(e) = crawler.execute(&url).await {
-                            eprintln!("{}", e);
-                        }
-                    } else {
-                        break;
+                if let Some(url) = crawler.pending.pop_front() {
+                    if let Err(e) = crawler.execute(&url).await {
+                        eprintln!("{}", e);
                     }
+                } else {
+                    break;
                 }
-            })
-        );
+            }
+        }));
     }
 
     futures::future::join_all(threads).await;
